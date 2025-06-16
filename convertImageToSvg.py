@@ -9,12 +9,12 @@ import math
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Convert PNG image to SVG with individual pixel paths, automatically optimizing large or complex images for better rendering')
+    parser = argparse.ArgumentParser(description='Convert PNG image to SVG with individual pixel paths')
     parser.add_argument('input', help='Input PNG file')
     parser.add_argument('-o', '--output', help='Output SVG file')
-    parser.add_argument('--max-size', type=int, default=500, help='Maximum dimension (width or height) for automatic resizing')
-    parser.add_argument('--max-colors', type=int, default=256, help='Maximum number of colors for automatic color reduction')
-    parser.add_argument('--force-full', action='store_true', help='Force processing the full image without any optimizations (may result in large, slow-to-render SVGs)')
+    parser.add_argument('--max-size', type=int, default=500, help='Maximum dimension (width or height) for image processing')
+    parser.add_argument('--max-colors', type=int, default=256, help='Maximum number of colors for the SVG')
+    parser.add_argument('--force-full', action='store_true', help='Force processing the full image without simplification')
     args = parser.parse_args()
 
     # Check if input file exists
@@ -39,13 +39,13 @@ def main():
     # Check if image needs to be resized
     is_too_large = original_width > args.max_size or original_height > args.max_size
     if is_too_large and not args.force_full:
-        print(f"Auto-resizing: {original_width}x{original_height} → ", end='')
+        print(f"Image is large ({original_width}x{original_height}). Resizing...")
         # Calculate scaling factor to fit within max_size
         scale_factor = min(args.max_size / original_width, args.max_size / original_height)
         new_width = int(original_width * scale_factor)
         new_height = int(original_height * scale_factor)
         img = img.resize((new_width, new_height), Image.LANCZOS)
-        print(f"{new_width}x{new_height}")
+        print(f"Resized to {new_width}x{new_height}")
     
     width, height = img.size
     pixels = np.array(img)
@@ -64,35 +64,41 @@ def main():
     # Check if there are too many colors
     color_count = len(unique_colors)
     point_count = sum(len(points) for points in unique_colors.values())
+    print(f"Found {color_count} unique colors across {point_count} points")
     
     # Assess SVG complexity before proceeding
     is_complex, recommendation = assess_svg_complexity(width, height, color_count, point_count)
     
     if is_complex and not args.force_full:
-        # Apply automatic optimization without asking
+        print(f"WARNING: {recommendation}")
         
-        if color_count > args.max_colors:
-            print(f"Auto-reducing colors: {color_count} → {args.max_colors}")
-            
-            # Use our improved quantization method
-            img_quantized = quantize_with_dither(img, args.max_colors)
-            
-            # Replace our image with the quantized version
-            img = img_quantized
-            pixels = np.array(img)
-            
-            # Re-extract unique colors
-            unique_colors = {}
-            for y in range(height):
-                for x in range(width):
-                    r, g, b, a = pixels[y][x]
-                    if a > 0:  # Only include visible pixels
-                        color_key = f"#{r:02x}{g:02x}{b:02x}"
-                        if color_key not in unique_colors:
-                            unique_colors[color_key] = []
-                        unique_colors[color_key].append((x, y))
+        if not args.force_full and input("Proceed with automatic optimization? [Y/n]: ").lower() != 'n':
+            if color_count > args.max_colors:
+                print(f"Simplifying from {color_count} colors to {args.max_colors} colors...")
+                
+                # Use our improved quantization method
+                img_quantized = quantize_with_dither(img, args.max_colors)
+                
+                # Replace our image with the quantized version
+                img = img_quantized
+                pixels = np.array(img)
+                
+                # Re-extract unique colors
+                unique_colors = {}
+                for y in range(height):
+                    for x in range(width):
+                        r, g, b, a = pixels[y][x]
+                        if a > 0:  # Only include visible pixels
+                            color_key = f"#{r:02x}{g:02x}{b:02x}"
+                            if color_key not in unique_colors:
+                                unique_colors[color_key] = []
+                            unique_colors[color_key].append((x, y))
+                
+                print(f"Reduced to {len(unique_colors)} colors")
+        else:
+            print("Continuing with original image parameters. The resulting SVG may be very large.")
     elif color_count > args.max_colors and not args.force_full:
-        print(f"Auto-reducing colors: {color_count} → {args.max_colors}")
+        print(f"Too many colors ({color_count}). Simplifying to {args.max_colors} colors...")
         
         # Use our improved quantization method
         img_quantized = quantize_with_dither(img, args.max_colors)
@@ -111,6 +117,8 @@ def main():
                     if color_key not in unique_colors:
                         unique_colors[color_key] = []
                     unique_colors[color_key].append((x, y))
+        
+        print(f"Reduced to {len(unique_colors)} colors")
     
     # Generate SVG
     svg_content = f'''<?xml version="1.0" encoding="UTF-8" standalone="no"?>
@@ -172,14 +180,27 @@ def main():
         with open(args.output, 'w') as f:
             f.write(svg_content)
         
-        # Calculate SVG file size
+        # Calculate SVG file size and provide summary
         svg_size = os.path.getsize(args.output) / 1024  # Size in KB
         
-        print(f"Converted: {args.input} → {args.output} ({width}x{height}, {len(unique_colors)} colors, {svg_size:.1f} KB)")
+        print(f"Successfully converted {args.input} to {args.output}")
+        print(f"SVG Statistics:")
+        print(f"  - Image dimensions: {width}x{height}")
+        print(f"  - Unique colors: {len(unique_colors)}")
+        print(f"  - SVG file size: {svg_size:.2f} KB")
         
-        # Only show warning if SVG is extremely large despite optimization
-        if svg_size > 5000 and not args.force_full:  # If larger than 5MB
-            print(f"WARNING: SVG is very large ({svg_size:.1f} KB). For better results, try: --max-size 300 --max-colors 64")
+        # Provide warning if the SVG is still large
+        if svg_size > 5000:  # If larger than 5MB
+            print(f"\nWARNING: The generated SVG is quite large ({svg_size:.2f} KB).")
+            print("Consider using smaller images or fewer colors for better performance.")
+            print(f"Try: python {os.path.basename(__file__)} {args.input} --max-size 300 --max-colors 64")
+        
+        # Assess SVG complexity and provide recommendations
+        point_count = sum(len(points) for points in unique_colors.values())
+        is_complex, recommendation = assess_svg_complexity(width, height, len(unique_colors), point_count)
+        if is_complex:
+            print("\nWARNING: The generated SVG may be complex to render.")
+            print(f"Recommendation: {recommendation}")
     except Exception as e:
         print(f"Error writing SVG file: {e}")
         sys.exit(1)
